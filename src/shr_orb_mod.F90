@@ -5,7 +5,6 @@ MODULE shr_orb_mod
   use shr_const_mod
   use shr_log_mod, only: s_loglev  => shr_log_Level
   use shr_log_mod, only: s_logunit => shr_log_Unit
-
   IMPLICIT none
 
   !----------------------------------------------------------------------------
@@ -148,12 +147,19 @@ CONTAINS
     if (present(dt_avg)) then
       if (dt_avg /= 0.0_shr_kind_r8) use_dt_avg = .true.
     end if
+
     ! If dt for the average cosz is specified, then call the shr_orb_avg_cosz
     if (use_dt_avg) then
-      shr_orb_cosz = shr_orb_avg_cosz(jday, lat, lon, declin, dt_avg)
+       shr_orb_cosz = shr_orb_avg_cosz(jday, lat, lon, declin, dt_avg)
     else
-      shr_orb_cosz = sin(lat)*sin(declin) - cos(lat)*cos(declin) * &
+#ifdef planet_mars
+       ! MARS MOD: Subtract 1.0 from jday to apply planetary phase shift 
+       shr_orb_cosz = sin(lat)*sin(declin) - cos(lat)*cos(declin) * &
+                     cos((jday - 1.0_SHR_KIND_R8)*2.0_SHR_KIND_R8*pi + lon)
+#else
+       shr_orb_cosz = sin(lat)*sin(declin) - cos(lat)*cos(declin) * &
                      cos((jday-floor(jday))*2.0_SHR_KIND_R8*pi + lon)
+#endif
     end if
 
   END FUNCTION shr_orb_cosz
@@ -735,6 +741,9 @@ CONTAINS
 
   SUBROUTINE shr_orb_decl(calday ,eccen ,mvelpp ,lambm0 ,obliqr ,delta ,eccf)
 
+#ifdef planet_mars
+    use clm_varorb             , only : exo_porb
+#endif
     !-------------------------------------------------------------------------------
     !
     ! Compute earth/orbit parameters using formula suggested by
@@ -759,10 +768,14 @@ CONTAINS
     real   (SHR_KIND_R8),intent(out) :: eccf   ! Earth-sun distance factor (ie. (1/r)**2)
 
     !---------------------------Local variables-----------------------------
+#ifdef planet_mars
+    real   (SHR_KIND_R8),parameter :: dayspy = exo_porb         ! days per year
+    real   (SHR_KIND_R8),parameter :: ve     = 1.0_SHR_KIND_R8   ! Calday of vernal equinox
+#else
     real   (SHR_KIND_R8),parameter :: dayspy = 365.0_SHR_KIND_R8  ! days per year
     real   (SHR_KIND_R8),parameter :: ve     = 80.5_SHR_KIND_R8   ! Calday of vernal equinox
     ! assumes Jan 1 = calday 1
-
+#endif
     real   (SHR_KIND_R8) ::   lambm  ! Lambda m, mean long of perihelion (rad)
     real   (SHR_KIND_R8) ::   lmm    ! Intermediate argument involving lambm
     real   (SHR_KIND_R8) ::   lamb   ! Lambda, the earths long of perihelion
