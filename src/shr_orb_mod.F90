@@ -741,9 +741,6 @@ CONTAINS
 
   SUBROUTINE shr_orb_decl(calday ,eccen ,mvelpp ,lambm0 ,obliqr ,delta ,eccf)
 
-#ifdef planet_mars
-    use clm_varorb             , only : exo_porb
-#endif
     !-------------------------------------------------------------------------------
     !
     ! Compute earth/orbit parameters using formula suggested by
@@ -769,8 +766,8 @@ CONTAINS
 
     !---------------------------Local variables-----------------------------
 #ifdef planet_mars
-    real   (SHR_KIND_R8),parameter :: dayspy = exo_porb         ! days per year
-    real   (SHR_KIND_R8),parameter :: ve     = 1.0_SHR_KIND_R8   ! Calday of vernal equinox
+    real   (SHR_KIND_R8),parameter :: dayspy = 687.0_SHR_KIND_R8  ! days per year
+    real   (SHR_KIND_R8),parameter :: ve     = 1.0_SHR_KIND_R8    ! Calday of vernal equinox
 #else
     real   (SHR_KIND_R8),parameter :: dayspy = 365.0_SHR_KIND_R8  ! days per year
     real   (SHR_KIND_R8),parameter :: ve     = 80.5_SHR_KIND_R8   ! Calday of vernal equinox
