@@ -54,6 +54,7 @@ module shr_scam_mod
    private :: is_latlon          ! Check if variable name is a latitude or longitude
    private :: get_close          ! Retrieve the closest lat/lon
    private :: get_latlonindices  ! Get the start/count indices to retreive lat or long
+   private :: choose_latlon      ! Choose one latitude or longitude coordinate variable
 
 ! !PRIVATE DATA MEMBERS:
 
@@ -112,6 +113,8 @@ subroutine shr_scam_getCloseLatLonNC(ncid, targetLat,  targetLon, closeLat, clos
    integer(IN)                      ::  nlondims
    integer(IN)                      ::  nvars
    integer(IN)                      ::  nvarid
+   integer(IN)                      ::  latvarid  ! chosen latitude variable (0: none)
+   integer(IN)                      ::  lonvarid  ! chosen longitude variable (0: none)
    integer(IN)                      ::  ndimid
    integer(IN)                      ::  strt(nf90_max_var_dims),cnt(nf90_max_var_dims)
    integer(IN)                      ::  nlon,nlat
@@ -137,6 +140,8 @@ subroutine shr_scam_getCloseLatLonNC(ncid, targetLat,  targetLon, closeLat, clos
    if ( present(rc) )then
       rc = 0   ! Initialize return code to something
    end if
+   len = 0; latlen = 0; lonlen = 0; ndims = 0; nlatdims = 0; nlondims = 0
+   nlat = 0; nlon = 0; nvars = 0; latvarid = 0; lonvarid = 0
 
    !--- Get variable info for search ---
 
@@ -151,99 +156,94 @@ subroutine shr_scam_getCloseLatLonNC(ncid, targetLat,  targetLon, closeLat, clos
 
    allocate( vars(nvars) )
    do nvarid = 1, nvars
-      rcode = nf90_inquire_variable(ncid, nvarid, vars(nvarid), ndims=ndims,dimids = dimids)
+      rcode = nf90_inquire_variable(ncid, nvarid, vars(nvarid))
       if (rcode /= nf90_noerr) then
-         call shr_ncread_handleErr( rcode, subname//"ERROR inquiring about variable "// &
-                                    trim(vars(nvarid)) )
+         call shr_ncread_handleErr( rcode, subname//"ERROR inquiring about variable id" )
          if ( present(rc) )then
             rc = rcode
             return
          end if
       endif
-      !-- If latitude variable ---
-      if ( is_latlon( vars(nvarid), latitude=.true., varnotdim=.true. ) )then
-         nlatdims = ndims
-         if (.not. allocated(latdimnames) ) allocate( latdimnames(ndims) )
-         do ndimid =  1,ndims
-            rcode = nf90_inquire_dimension(ncid, dimids(ndimid), latdimnames(ndimid), len)
-            if (rcode /= nf90_noerr) then
-               call shr_ncread_handleErr( rcode, subname// &
-                   "ERROR: Cant read netcdf latitude variable dimension")
-               if ( present(rc) )then
-                  rc = rcode
-                  return
-               end if
-            endif
-            !--- is this a latitude dimension  ---
-            if ( is_latlon( latdimnames(ndimid), latitude=.true., varnotdim=.false. ) )then
-               latlen = len
-            end if
-         end do
-      end if
-      !-- If longitude variable ---
-      if ( is_latlon( vars(nvarid), latitude=.false., varnotdim=.true. ) )then
-         nlondims = ndims
-         if (.not. allocated(londimnames) ) allocate( londimnames(ndims) )
-         do ndimid =  1,ndims
-            rcode = nf90_inquire_dimension(ncid, dimids(ndimid), londimnames(ndimid), len)
-            call shr_ncread_handleErr( rcode, subname &
-                           //"ERROR: Cant read netcdf longitude variable dimension" )
-            if ( rcode /= nf90_noerr .and. present(rc) )then
+   end do
+
+   !--- Choose one latitude and one longitude coordinate variable ---
+   latvarid = choose_latlon( vars, nvars, latitude=.true. )
+   lonvarid = choose_latlon( vars, nvars, latitude=.false. )
+
+   !--- Dimensions of the chosen latitude variable ---
+   if ( latvarid > 0 )then
+      rcode = nf90_inquire_variable(ncid, latvarid, ndims=nlatdims, dimids=dimids)
+      allocate( latdimnames(nlatdims) )
+      do ndimid =  1,nlatdims
+         rcode = nf90_inquire_dimension(ncid, dimids(ndimid), latdimnames(ndimid), len)
+         if (rcode /= nf90_noerr) then
+            call shr_ncread_handleErr( rcode, subname// &
+                "ERROR: Cant read netcdf latitude variable dimension")
+            if ( present(rc) )then
                rc = rcode
                return
             end if
-            !--- is this a longitude dimension  ---
-            if ( is_latlon( londimnames(ndimid), latitude=.false., varnotdim=.false. ) )then
-               lonlen = len
+         endif
+         !--- is this a latitude dimension  ---
+         if ( is_latlon( latdimnames(ndimid), latitude=.true., varnotdim=.false. ) )then
+            latlen = len
+         end if
+      end do
+   end if
+
+   !--- Dimensions of the chosen longitude variable ---
+   if ( lonvarid > 0 )then
+      rcode = nf90_inquire_variable(ncid, lonvarid, ndims=nlondims, dimids=dimids)
+      allocate( londimnames(nlondims) )
+      do ndimid =  1,nlondims
+         rcode = nf90_inquire_dimension(ncid, dimids(ndimid), londimnames(ndimid), len)
+         if (rcode /= nf90_noerr) then
+            call shr_ncread_handleErr( rcode, subname &
+                           //"ERROR: Cant read netcdf longitude variable dimension" )
+            if ( present(rc) )then
+               rc = rcode
+               return
             end if
-         end do
-      end if
-   end do
+         endif
+         !--- is this a longitude dimension  ---
+         if ( is_latlon( londimnames(ndimid), latitude=.false., varnotdim=.false. ) )then
+            lonlen = len
+         end if
+      end do
+   end if
 
-   !--- Look for/extract lat lon coordinate variables from file ---
+   !--- Read the chosen coordinate variables ---
 
-   nlat=0
-   nlon=0
-   nvarid=0
-
-   !--- Loop through all variables until we find lat and lon ---
-
-   do while (nvarid < nvars .and.(nlon.eq.0 .or. nlat.eq.0))
-      nvarid=nvarid+1
-
-      !--- Get latitude ---
-
-      if ( is_latlon( vars(nvarid), latitude=.true., varnotdim=.true. ) )then
-
-         call get_latlonindices( latitude=.true., dimnames=latdimnames, ndims=nlatdims, &
-                                 nlen=latlen, strt=strt, cnt=cnt )
-         nlat = latlen
-         if (.not. allocated(lats) ) allocate( lats(nlat) )
-         rcode= nf90_get_var(ncid, nvarid ,lats, start = strt, count = cnt)
-         call shr_ncread_handleErr( rcode, subname &
-                           //"ERROR: Cant read netcdf latitude" )
-         if ( rcode /= nf90_noerr .and. present(rc) )then
+   if ( latvarid > 0 )then
+      call get_latlonindices( latitude=.true., dimnames=latdimnames, ndims=nlatdims, &
+                              nlen=latlen, strt=strt, cnt=cnt )
+      nlat = latlen
+      allocate( lats(nlat) )
+      rcode= nf90_get_var(ncid, latvarid, lats, start = strt(:nlatdims), count = cnt(:nlatdims))
+      if (rcode /= nf90_noerr) then
+         call shr_ncread_handleErr( rcode, subname//"ERROR: Cant read netcdf latitude" )
+         if ( present(rc) )then
             rc = rcode
             return
          end if
       end if
+   end if
 
-      !--- Get longitude ---
-
-      if ( is_latlon( vars(nvarid), latitude=.false., varnotdim=.true. ) )then
-         call get_latlonindices( latitude=.false., ndims=nlondims, dimnames=londimnames, &
-                                 nlen=lonlen, strt=strt, cnt=cnt )
-         nlon = lonlen
-         if (.not. allocated(lons) ) allocate( lons(nlon) )
-         rcode= nf90_get_var(ncid, nvarid ,lons, start = strt, count = cnt)
-         call shr_ncread_handleErr( rcode, subname &
-                           //"ERROR: Cant read netcdf longitude" )
-         if ( rcode /= nf90_noerr .and. present(rc) )then
+   if ( lonvarid > 0 )then
+      call get_latlonindices( latitude=.false., ndims=nlondims, dimnames=londimnames, &
+                              nlen=lonlen, strt=strt, cnt=cnt )
+      nlon = lonlen
+      allocate( lons(nlon) )
+      rcode= nf90_get_var(ncid, lonvarid, lons, start = strt(:nlondims), count = cnt(:nlondims))
+      if (rcode /= nf90_noerr) then
+         call shr_ncread_handleErr( rcode, subname//"ERROR: Cant read netcdf longitude" )
+         if ( present(rc) )then
             rc = rcode
             return
          end if
       end if
-   end do
+   end if
+
    if ( present(found) )then
       if ( nlat == 0 .or. nlon == 0 ) then
          write(s_logunit,*) subname//"WARNING: Cant find appropriate latitude or longitude coordinate variables"
@@ -263,12 +263,8 @@ subroutine shr_scam_getCloseLatLonNC(ncid, targetLat,  targetLon, closeLat, clos
 
    end if
 
-   if (londimnames(1) .eq. 'ncol') then !-- Enforce for SE grids
-     closelatidx = 1
-   endif
-
-   if (londimnames(1) .eq. 'ncol') then !-- Enforce for SE grids
-     closelatidx = 1
+   if ( allocated(londimnames) )then  !-- Enforce for SE grids
+      if (londimnames(1) == 'ncol' .or. londimnames(1) == 'ncol_d') closelatidx = 1
    endif
 
    if ( allocated(lats)        ) deallocate(lats)
@@ -323,17 +319,19 @@ subroutine shr_scam_getCloseLatLonPIO(pioid, targetLat,  targetLon, closeLat, cl
    !----- local variables -----
    real   (R8),allocatable          :: lats(:),lons(:)
    integer(IN)                      :: rcode   ! netCDF routine return code
-   integer(IN)                      ::  len      = 0
-   integer(IN)                      ::  latlen   = 0
-   integer(IN)                      ::  lonlen   = 0
-   integer(IN)                      ::  ndims    = 0
-   integer(IN)                      ::  nlatdims = 0
-   integer(IN)                      ::  nlondims = 0
-   integer(IN)                      ::  nvars    = 0
+   integer(IN)                      ::  len        ! (not initialized in declarations:
+   integer(IN)                      ::  latlen     !  that would make them SAVEd from
+   integer(IN)                      ::  lonlen     !  one call to the next)
+   integer(IN)                      ::  ndims
+   integer(IN)                      ::  nlatdims
+   integer(IN)                      ::  nlondims
+   integer(IN)                      ::  nvars
    integer(IN)                      ::  nvarid
+   integer(IN)                      ::  latvarid  ! chosen latitude variable (0: none)
+   integer(IN)                      ::  lonvarid  ! chosen longitude variable (0: none)
    integer(IN)                      ::  ndimid
    integer(IN)                      ::  strt(nf90_max_var_dims),cnt(nf90_max_var_dims)
-   integer(IN)                      ::  nlon = 0, nlat = 0
+   integer(IN)                      ::  nlon, nlat
    logical                          ::  lfound
    logical                          ::  is_segrid, islatitude        ! local version of found
    integer(IN), dimension(nf90_max_var_dims) :: dimids
@@ -354,6 +352,8 @@ subroutine shr_scam_getCloseLatLonPIO(pioid, targetLat,  targetLon, closeLat, cl
    if ( present(rc) )then
       rc = 0   ! Initialize return code to something
    end if
+   len = 0; latlen = 0; lonlen = 0; ndims = 0; nlatdims = 0; nlondims = 0
+   nlat = 0; nlon = 0; nvars = 0; latvarid = 0; lonvarid = 0
    !--- Get variable info for search ---
 
    call pio_seterrorhandling(pioid,PIO_BCAST_ERROR)
@@ -368,7 +368,7 @@ subroutine shr_scam_getCloseLatLonPIO(pioid, targetLat,  targetLon, closeLat, cl
 
    allocate( vars(nvars) )
    do nvarid = 1, nvars
-      rcode = pio_inquire_variable(pioid, nvarid, vars(nvarid), ndims=ndims,dimids = dimids)
+      rcode = pio_inquire_variable(pioid, nvarid, vars(nvarid))
       if (rcode /= PIO_noerr) then
          write(s_logunit,*) subname//"ERROR inquiring about variable id #", nvarid
          call shr_ncread_handleErr( rcode, subname//"ERROR: inquiring about variable" )
@@ -377,53 +377,55 @@ subroutine shr_scam_getCloseLatLonPIO(pioid, targetLat,  targetLon, closeLat, cl
             return
          end if
       endif
-      !-- If latitude variable ---
-      if ( is_latlon( vars(nvarid), latitude=.true., varnotdim=.true. ) )then
-         nlatdims = ndims
-         allocate( latdimnames(ndims) )
-         do ndimid =  1,ndims
-            rcode = pio_inquire_dimension(pioid, dimids(ndimid), latdimnames(ndimid), len)
-            if (rcode /= pio_noerr) then
-               call shr_ncread_handleErr( rcode, subname// &
-                                   "ERROR: Cant read netcdf latitude variable dimension")
-               if ( present(rc) )then
-                  rc = rcode
-                  return
-               end if
-            endif
-            !--- is this a latitude dimension  ---
-            if ( is_latlon( latdimnames(ndimid), latitude=.true., varnotdim=.false. ) )then
-               latlen = len
-            end if
-         end do
-      end if
-      !-- If longitude variable ---
-      if ( is_latlon( vars(nvarid), latitude=.false., varnotdim=.true. ) )then
-         nlondims = ndims
-         allocate( londimnames(ndims) )
-         do ndimid =  1,ndims
-            rcode = pio_inquire_dimension(pioid, dimids(ndimid), londimnames(ndimid), len)
-            if (rcode /= PIO_noerr) then
-               call shr_ncread_handleErr( rcode, subname// &
-                                   "ERROR: Cant read netcdf longitude variable dimension")
-               if ( present(rc) )then
-                  rc = rcode
-                  return
-               end if
-            endif
-            !--- is this a longitude dimension  ---
-            if ( is_latlon( londimnames(ndimid), latitude=.false., varnotdim=.false. ) )then
-               lonlen = len
-            end if
-         end do
-      end if
    end do
 
-   !--- Look for/extract lat lon coordinate variables from file ---
+   !--- Choose one latitude and one longitude coordinate variable ---
+   latvarid = choose_latlon( vars, nvars, latitude=.true. )
+   lonvarid = choose_latlon( vars, nvars, latitude=.false. )
 
-   nlat=0
-   nlon=0
-   nvarid=0
+   !--- Dimensions of the chosen latitude variable ---
+   if ( latvarid > 0 )then
+      rcode = pio_inquire_variable(pioid, latvarid, ndims=nlatdims, dimids=dimids)
+      allocate( latdimnames(nlatdims) )
+      do ndimid =  1,nlatdims
+         rcode = pio_inquire_dimension(pioid, dimids(ndimid), latdimnames(ndimid), len)
+         if (rcode /= pio_noerr) then
+            call shr_ncread_handleErr( rcode, subname// &
+                                "ERROR: Cant read netcdf latitude variable dimension")
+            if ( present(rc) )then
+               rc = rcode
+               return
+            end if
+         endif
+         !--- is this a latitude dimension  ---
+         if ( is_latlon( latdimnames(ndimid), latitude=.true., varnotdim=.false. ) )then
+            latlen = len
+         end if
+      end do
+   end if
+
+   !--- Dimensions of the chosen longitude variable ---
+   if ( lonvarid > 0 )then
+      rcode = pio_inquire_variable(pioid, lonvarid, ndims=nlondims, dimids=dimids)
+      allocate( londimnames(nlondims) )
+      do ndimid =  1,nlondims
+         rcode = pio_inquire_dimension(pioid, dimids(ndimid), londimnames(ndimid), len)
+         if (rcode /= PIO_noerr) then
+            call shr_ncread_handleErr( rcode, subname// &
+                                "ERROR: Cant read netcdf longitude variable dimension")
+            if ( present(rc) )then
+               rc = rcode
+               return
+            end if
+         endif
+         !--- is this a longitude dimension  ---
+         if ( is_latlon( londimnames(ndimid), latitude=.false., varnotdim=.false. ) )then
+            lonlen = len
+         end if
+      end do
+   end if
+
+   !--- Look for/extract lat lon coordinate variables from file ---
 
    if (latlen .eq. 1 .and. lonlen .gt. 1) then
      latlen=lonlen
@@ -439,49 +441,39 @@ subroutine shr_scam_getCloseLatLonPIO(pioid, targetLat,  targetLon, closeLat, cl
      is_segrid=.false.
    endif
 
-   !--- Loop through all variables until we find lat and lon ---
+   !--- Read the chosen coordinate variables ---
 
-   do while (nvarid < nvars .and.(nlon.eq.0 .or. nlat.eq.0))
-      nvarid=nvarid+1
+   if ( latvarid > 0 )then
+      call get_latlonindices( latitude=islatitude, ndims=nlatdims, dimnames=latdimnames, &
+                              nlen=latlen, strt=strt, cnt=cnt )
+      nlat = latlen
+      allocate(lats(nlat))
+      rcode= pio_get_var(pioid, latvarid, strt(:nlatdims), cnt(:nlatdims), lats)
+      if (rcode /= PIO_noerr) then
+         call shr_ncread_handleErr( rcode, subname// &
+                            "ERROR: Cant read netcdf latitude")
+         if ( present(rc) )then
+            rc = rcode
+            return
+         end if
+      endif
+   end if
 
-      !--- Get latitude ---
-
-      if ( is_latlon( vars(nvarid), latitude=.true., varnotdim=.true. ) )then
-
-         call get_latlonindices( latitude=islatitude, ndims=nlatdims, dimnames=latdimnames, &
-                                 nlen=latlen, strt=strt, cnt=cnt )
-
-         nlat = latlen
-         allocate(lats(nlat))
-         rcode= pio_get_var(pioid, nvarid ,strt(:nlatdims), cnt(:nlatdims), lats)
-         if (rcode /= PIO_noerr) then
-            call shr_ncread_handleErr( rcode, subname// &
-                               "ERROR: Cant read netcdf latitude")
-            if ( present(rc) )then
-               rc = rcode
-               return
-            end if
-         endif
-      end if
-
-      !--- Get longitude ---
-
-      if ( is_latlon( vars(nvarid), latitude=.false., varnotdim=.true. ) )then
-         call get_latlonindices( latitude=.false., ndims=nlondims, dimnames=londimnames, &
-                                 nlen=lonlen, strt=strt, cnt=cnt )
-         nlon = lonlen
-         allocate(lons(nlon))
-         rcode= pio_get_var(pioid, nvarid ,strt(:nlondims), cnt(:nlondims), lons)
-         if (rcode /= PIO_noerr) then
-            call shr_ncread_handleErr( rcode, subname// &
-                               "ERROR: Cant read netcdf longitude")
-            if ( present(rc) )then
-               rc = rcode
-               return
-            end if
-         endif
-      end if
-   end do
+   if ( lonvarid > 0 )then
+      call get_latlonindices( latitude=.false., ndims=nlondims, dimnames=londimnames, &
+                              nlen=lonlen, strt=strt, cnt=cnt )
+      nlon = lonlen
+      allocate(lons(nlon))
+      rcode= pio_get_var(pioid, lonvarid, strt(:nlondims), cnt(:nlondims), lons)
+      if (rcode /= PIO_noerr) then
+         call shr_ncread_handleErr( rcode, subname// &
+                            "ERROR: Cant read netcdf longitude")
+         if ( present(rc) )then
+            rc = rcode
+            return
+         end if
+      endif
+   end if
    call pio_seterrorhandling(pioid,PIO_INTERNAL_ERROR)
 
    if ( present(found) )then
@@ -558,7 +550,7 @@ subroutine shr_scam_getCloseLatLonFile(filename, targetLat,  targetLon, closeLat
 !-------------------------------------------------------------------------------
    call shr_ncread_open(fileName,ncid,rCode)
    if ( rCode /= NF90_NOERR )then
-      found = .false.
+      if ( present(found) ) found = .false.
       if ( present(rc) ) rc = rCode
       return
    end if
@@ -574,6 +566,45 @@ subroutine shr_scam_getCloseLatLonFile(filename, targetLat,  targetLon, closeLat
    end if
 
 end subroutine shr_scam_getCloseLatLonFile
+
+!===============================================================================
+!BOP ===========================================================================
+!
+! !IROUTINE: choose_latlon
+!
+! !DESCRIPTION:
+!     Choose one latitude (or longitude) coordinate variable among the file's
+!     variables: "lat" ("lon") if present, otherwise the first variable that
+!     is_latlon accepts.  Returns its variable id, or 0 if there is none.
+!     Files can hold several (e.g. lat and lat_d on SE history and CAMIOP files),
+!     and the search must describe and read the same one.
+!
+! !INTERFACE: ------------------------------------------------------------------
+integer function choose_latlon( vars, nvars, latitude )
+! !USES:
+  use shr_string_mod, only: shr_string_toLower
+! !INPUT/OUTPUT PARAMETERS:
+   implicit none
+   integer(IN),      intent(in) :: nvars
+   character(len=*), intent(in) :: vars(nvars)  ! variable names, by variable id
+   logical,          intent(in) :: latitude     ! true: latitude, false: longitude
+!EOP
+   integer(IN)       :: n
+   character(len=3)  :: plain
+!-------------------------------------------------------------------------------
+   plain = 'lon'
+   if ( latitude ) plain = 'lat'
+   choose_latlon = 0
+   do n = 1, nvars
+      if ( is_latlon( vars(n), latitude=latitude, varnotdim=.true. ) )then
+         if ( trim(shr_string_toLower(trim(vars(n)))) == plain )then
+            choose_latlon = n
+            return
+         end if
+         if ( choose_latlon == 0 ) choose_latlon = n
+      end if
+   end do
+end function choose_latlon
 
 !===============================================================================
 !BOP ===========================================================================
@@ -677,12 +708,13 @@ subroutine get_latlonindices( latitude, ndims, dimnames, nlen, strt, cnt )
 
    !----- local variables -----
    integer(IN)   ::  ndimid
-   logical       :: found = .false.
+   logical       :: found
    character(*),parameter :: subname = "(shr_scam_getlatlonindices) "
 !-------------------------------------------------------------------------------
 ! Notes:
 !-------------------------------------------------------------------------------
 
+   found = .false.
    if ( ndims == 0 )then
       call abort( subname//"ERROR: Could NOT find dimension")
    end if
